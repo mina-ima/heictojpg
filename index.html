@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HEIC to JPG Converter</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>HEIC to JPG Converter</h1>
+        <p>
+          HEIC画像をブラウザでJPGに変換します。サーバーにファイルは送信されません。
+        </p>
+      </header>
+
+      <main>
+        <div id="drop-zone" class="drop-zone">
+          <div class="drop-zone__prompt">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="48"
+              height="48"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <span>ここにHEICファイルをドラッグ＆ドロップ</span>
+            <span class="drop-zone__or">または</span>
+            <button id="file-select-btn" class="button">ファイルを選択</button>
+          </div>
+          <input
+            type="file"
+            id="file-input"
+            multiple
+            accept=".heic,image/heic"
+            hidden
+          />
+        </div>
+
+        <div id="status-area" class="status-area" hidden>
+          <div id="file-list" class="file-list"></div>
+          <div id="progress-bar-container" class="progress-bar-container">
+            <div id="progress-bar" class="progress-bar"></div>
+          </div>
+          <p id="status-message" class="status-message"></p>
+          <p class="warning-text">
+            <small>変換中はこの画面を閉じないでください。</small>
+          </p>
+        </div>
+
+        <div id="controls" class="controls">
+          <button id="start-btn" class="button" disabled>変換開始</button>
+          <button id="cancel-btn" class="button" hidden>キャンセル</button>
+          <button id="download-btn" class="button" hidden>
+            ダウンロード
+          </button>
+          <button id="reset-btn" class="button" hidden>再選択</button>
+        </div>
+
+        <div id="error-area" class="error-area" hidden>
+          <p id="error-message"></p>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

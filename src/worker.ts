@@ -1,50 +1,59 @@
-/**
- * Web Worker for handling HEIC to JPG conversion.
- */
+import JSZip from 'jszip';
 
-// A simple async sleep function for simulation
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+declare const self: Worker;
 
-// Listen for messages from the main thread
+let currentAbortController: AbortController | null = null; // Worker内部でAbortControllerを管理
+
 self.addEventListener('message', async (event) => {
-  const { type, files } = event.data;
+  const { type, files } = event.data; // signalの受け取りを削除
 
-  if (type === 'start-conversion') {
-    if (!files || files.length === 0) {
-      self.postMessage({ type: 'done' });
-      return;
+  if (type === 'start-zipping') { // メッセージタイプをstart-zippingに戻す
+    currentAbortController = new AbortController(); // 新しいAbortControllerを作成
+    const signal = currentAbortController.signal; // そのsignalを使用
+
+    try {
+      const convertedFiles = files; // main.tsから変換済みファイルを受け取る
+
+      // --- Zipping Converted Files ---
+      self.postMessage({ type: 'debug', payload: 'Starting zipping process...' }); // DEBUG: ZIP開始ログ
+      const zip = new JSZip();
+      for (let i = 0; i < convertedFiles.length; i++) {
+        const file = convertedFiles[i];
+        if (signal.aborted) { // signal.abortedでキャンセルをチェック
+          self.postMessage({ type: 'error', payload: { message: 'ZIP作成がキャンセルされました。' } });
+          return;
+        }
+        zip.file(file.name, file.blob);
+
+        self.postMessage({
+          type: 'zip-progress',
+          payload: {
+            current: i + 1,
+            total: convertedFiles.length,
+          },
+        });
+      }
+      self.postMessage({ type: 'debug', payload: 'Finished adding files to zip. Generating zip blob...' }); // DEBUG: ZIP生成前ログ
+
+      const zipBlob = await zip.generateAsync({ type: 'blob', signal: signal }); // Worker内部のsignalを渡す
+      self.postMessage({ type: 'done', payload: zipBlob });
+      self.postMessage({ type: 'debug', payload: 'Zip blob generated and sent.' }); // DEBUG: ZIP完了ログ
+
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        self.postMessage({ type: 'debug', payload: 'Operation aborted.' }); // DEBUG: Abortログ
+      } else {
+        self.postMessage({ type: 'error', payload: { message: error.message || '処理中にエラーが発生しました。' } });
+        self.postMessage({ type: 'debug', payload: `Error in worker: ${error.message}` }); // DEBUG: エラーログ
+      }
+    } finally {
+      currentAbortController = null; // 処理完了後、AbortControllerをクリア
+      self.postMessage({ type: 'debug', payload: 'Worker process finished or aborted.' }); // DEBUG: finallyログ
     }
-
-    // Process files one by one (sequentially)
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-
-      // 1. Report progress to the main thread
-      self.postMessage({
-        type: 'progress',
-        payload: {
-          currentFile: file.name,
-          current: i + 1,
-          total: files.length,
-        },
-      });
-
-      // 2. Simulate the conversion work
-      // TODO: Replace this with the actual heic2any conversion (Task 13)
-      await sleep(100); // Simulate 100ms of work per file
-
-      // 3. Report the (simulated) converted file back
-      self.postMessage({
-        type: 'converted-file',
-        payload: {
-          originalName: file.name,
-          // This will be the actual converted Blob later
-          convertedBlob: new Blob(['dummy'], { type: 'image/jpeg' }),
-        },
-      });
+  } else if (type === 'cancel') { // main.tsからのキャンセルメッセージを処理
+    if (currentAbortController) {
+      currentAbortController.abort(); // 処理中のAbortControllerをabortする
+      self.postMessage({ type: 'debug', payload: 'Abort signal sent to current operation.' }); // DEBUG: キャンセルログ
     }
-
-    // 4. Signal that all files are done
-    self.postMessage({ type: 'done' });
   }
 });

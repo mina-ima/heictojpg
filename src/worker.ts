@@ -1,59 +1,83 @@
+// src/worker.ts
+// 役割: 変換済みファイルを ZIP にまとめる
+// 中断は 'cancel' メッセージで受け取り、Promise.race で実装（JSZip に signal オプションは無い）
+
 import JSZip from 'jszip';
 
-declare const self: Worker;
+type ConvertedFile = { name: string; blob: Blob };
 
-let currentAbortController: AbortController | null = null; // Worker内部でAbortControllerを管理
+type StartZippingMsg = { type: 'start-zipping'; files: ConvertedFile[] };
+type CancelMsg = { type: 'cancel' };
+type InMsg = StartZippingMsg | CancelMsg;
 
-self.addEventListener('message', async (event) => {
-  const { type, files } = event.data; // signalの受け取りを削除
+// cancel 用の reject を保持（未処理なら null）
+let rejectAbort: ((reason?: any) => void) | null = null;
 
-  if (type === 'start-zipping') { // メッセージタイプをstart-zippingに戻す
-    currentAbortController = new AbortController(); // 新しいAbortControllerを作成
-    const signal = currentAbortController.signal; // そのsignalを使用
+function makeAbortPromise() {
+  // cancel を受けたらこの Promise を reject してレースに勝たせる
+  return new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+  });
+}
 
-    try {
-      const convertedFiles = files; // main.tsから変換済みファイルを受け取る
+// Worker 本体
+self.addEventListener('message', async (event: MessageEvent<InMsg>) => {
+  const data = event.data; // ← ここでは分割代入しない（判別後にアクセス）
 
-      // --- Zipping Converted Files ---
-      self.postMessage({ type: 'debug', payload: 'Starting zipping process...' }); // DEBUG: ZIP開始ログ
-      const zip = new JSZip();
-      for (let i = 0; i < convertedFiles.length; i++) {
-        const file = convertedFiles[i];
-        if (signal.aborted) { // signal.abortedでキャンセルをチェック
-          self.postMessage({ type: 'error', payload: { message: 'ZIP作成がキャンセルされました。' } });
+  try {
+    switch (data.type) {
+      case 'start-zipping': {
+        const { files } = data; // 判別後なので OK
+
+        if (!files || !Array.isArray(files)) {
+          self.postMessage({ type: 'error', payload: { message: 'ZIP 対象が不正です。' } });
           return;
         }
-        zip.file(file.name, file.blob);
 
-        self.postMessage({
-          type: 'zip-progress',
-          payload: {
-            current: i + 1,
-            total: convertedFiles.length,
-          },
+        const zip = new JSZip();
+
+        // ファイルを ZIP に追加（追加しながら簡易進捗を通知）
+        files.forEach((f, idx) => {
+          zip.file(f.name, f.blob);
+          self.postMessage({
+            type: 'zip-progress',
+            payload: { current: idx + 1, total: files.length },
+          });
         });
-      }
-      self.postMessage({ type: 'debug', payload: 'Finished adding files to zip. Generating zip blob...' }); // DEBUG: ZIP生成前ログ
 
-      const zipBlob = await zip.generateAsync({ type: 'blob', signal: signal }); // Worker内部のsignalを渡す
-      self.postMessage({ type: 'done', payload: zipBlob });
-      self.postMessage({ type: 'debug', payload: 'Zip blob generated and sent.' }); // DEBUG: ZIP完了ログ
+        // 生成開始
+        const genPromise = zip.generateAsync({ type: 'blob' });
 
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
-        self.postMessage({ type: 'debug', payload: 'Operation aborted.' }); // DEBUG: Abortログ
-      } else {
-        self.postMessage({ type: 'error', payload: { message: error.message || '処理中にエラーが発生しました。' } });
-        self.postMessage({ type: 'debug', payload: `Error in worker: ${error.message}` }); // DEBUG: エラーログ
+        // 中断監視（cancel で reject）
+        const abortPromise = makeAbortPromise();
+
+        // どちらか早い方を採用
+        const zipBlob = (await Promise.race([genPromise, abortPromise])) as Blob;
+
+        self.postMessage({ type: 'done', payload: zipBlob });
+        break;
       }
-    } finally {
-      currentAbortController = null; // 処理完了後、AbortControllerをクリア
-      self.postMessage({ type: 'debug', payload: 'Worker process finished or aborted.' }); // DEBUG: finallyログ
+
+      case 'cancel': {
+        // race 中の処理を AbortError で即中断
+        if (rejectAbort) {
+          rejectAbort(new DOMException('Aborted', 'AbortError'));
+          rejectAbort = null;
+        }
+        break;
+      }
     }
-  } else if (type === 'cancel') { // main.tsからのキャンセルメッセージを処理
-    if (currentAbortController) {
-      currentAbortController.abort(); // 処理中のAbortControllerをabortする
-      self.postMessage({ type: 'debug', payload: 'Abort signal sent to current operation.' }); // DEBUG: キャンセルログ
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      self.postMessage({ type: 'error', payload: { message: '処理がキャンセルされました。' } });
+    } else {
+      self.postMessage({
+        type: 'error',
+        payload: { message: err?.message ?? 'ZIP 作成中にエラーが発生しました。' },
+      });
     }
+  } finally {
+    // 次回のために必ずクリア
+    rejectAbort = null;
   }
 });

@@ -15,31 +15,28 @@ const WARN_TOTAL_SIZE_BYTES = WARN_TOTAL_SIZE_GB * 1024 * 1024 * 1024;
 const dropZone = document.getElementById('drop-zone') as HTMLDivElement;
 const fileInput = document.getElementById('file-input') as HTMLInputElement;
 const fileSelectBtn = document.getElementById('file-select-btn') as HTMLButtonElement;
-const fileListDiv = document.getElementById('file-list') as HTMLDivElement;
-const statusArea = document.getElementById('status-area') as HTMLDivElement;
-const statusMessage = document.getElementById('status-message') as HTMLParagraphElement;
-const progressBar = document.getElementById('progress-bar') as HTMLDivElement;
-const errorArea = document.getElementById('error-area') as HTMLDivElement;
-const errorMessage = document.getElementById('error-message') as HTMLParagraphElement;
 const startBtn = document.getElementById('start-btn') as HTMLButtonElement;
 const cancelBtn = document.getElementById('cancel-btn') as HTMLButtonElement;
 const downloadBtn = document.getElementById('download-btn') as HTMLButtonElement;
 const resetBtn = document.getElementById('reset-btn') as HTMLButtonElement;
+const statusArea = document.getElementById('status-area') as HTMLDivElement;
+const statusMessage = document.getElementById('status-message') as HTMLParagraphElement;
+const errorArea = document.getElementById('error-area') as HTMLDivElement;
+const errorMessage = document.getElementById('error-message') as HTMLParagraphElement;
+const progressBar = document.getElementById('progress-bar') as HTMLDivElement;
+const fileListDiv = document.getElementById('file-list') as HTMLDivElement;
 
-// --- State Variables ---
 let selectedFiles: File[] = [];
 let convertedFiles: { name: string; blob: Blob }[] = [];
 let worker: Worker | null = null;
 let abortController: AbortController | null = null;
-
-
 
 // --- Worker Setup ---
 function setupWorker() {
   if (worker) {
     worker.terminate();
   }
-  worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); // Removed { type: 'module' }
+  worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); // Web Worker (module)
 
   worker.addEventListener('message', (event) => {
     const { type, payload } = event.data;
@@ -47,20 +44,20 @@ function setupWorker() {
     console.log('Received message from worker:', type, payload);
 
     switch (type) {
-      case 'zip-progress': // Existing progress type for zipping
+      case 'zip-progress': // 進捗
         const zipPercentage = (payload.current / payload.total) * 100;
         updateProgress(zipPercentage);
         statusMessage.textContent = `ZIPファイルを作成中... (${payload.current}/${payload.total})`;
         break;
       case 'done':
-        downloadZip(payload); // Payload is the zipBlob
+        downloadZip(payload); // payload は zip Blob
         setUIState('converted');
         break;
       case 'error':
         showError(payload.message);
         resetUI();
         break;
-      case 'debug': // DEBUG: デバッグメッセージの処理
+      case 'debug':
         console.log('Worker Debug:', payload);
         break;
     }
@@ -94,7 +91,6 @@ cancelBtn.addEventListener('click', () => {
 });
 
 // --- Core Functions ---
-
 async function startConversion() {
   if (!worker || selectedFiles.length === 0) return;
 
@@ -118,12 +114,21 @@ async function startConversion() {
 
       statusMessage.textContent = `${file.name} を変換中...`;
       const arrayBuffer = await file.arrayBuffer();
+
+      // 中断が要求されていれば即終了
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
       const convertedBlob = await heic2any({
         blob: new Blob([arrayBuffer], { type: file.type }),
         toType: 'image/jpeg',
         quality: 0.95,
-        signal: signal, // Pass the signal to heic2any
       }) as Blob;
+
+      // 変換直後にも中断確認（保険）
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
 
       const newName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
       convertedFiles.push({ name: newName, blob: convertedBlob });
@@ -138,17 +143,16 @@ async function startConversion() {
       return;
     }
 
-    // Send all converted files to the worker for zipping
-    statusMessage.textContent = 'ZIPファイルを作成中...';
+    // ZIP化をWorkerに依頼
     worker.postMessage({ type: 'start-zipping', files: convertedFiles });
-
+    statusMessage.textContent = 'ZIPファイルを作成中...';
   } catch (error: any) {
     if (error.name === 'AbortError') {
       statusMessage.textContent = '変換がキャンセルされました。';
     } else {
       showError(error.message || '変換中にエラーが発生しました。');
     }
-    // resetUI(); // Reset UI on error or abort
+    // resetUI(); // 必要ならここでUIリセット
   }
 }
 
@@ -188,45 +192,32 @@ function handleFiles(files: FileList) {
 
   const totalSize = fileArray.reduce((sum, file) => sum + file.size, 0);
   if (totalSize > MAX_TOTAL_SIZE_BYTES) {
-    showError(`合計ファイルサイズの上限（${MAX_TOTAL_SIZE_GB}GB）を超えています。`);
+    showError(`合計サイズは最大${MAX_TOTAL_SIZE_GB}GBまでです。`);
     return;
   } else if (totalSize > WARN_TOTAL_SIZE_BYTES) {
-    showWarning(`合計ファイルサイズが${WARN_TOTAL_SIZE_GB}GBを超えています。処理に時間がかかる場合があります。`);
+    showWarning(`合計サイズが${WARN_TOTAL_SIZE_GB}GBを超えています。処理に時間がかかる可能性があります。`);
   }
 
   selectedFiles = fileArray;
-  if (selectedFiles.length > 0) {
-    updateFileList();
-    setUIState('files-selected');
-  } else {
-    resetUI();
-  }
+  renderFileList(selectedFiles);
+  setUIState('files-selected');
+}
+
+function renderFileList(files: File[]) {
+  fileListDiv.innerHTML = files.map(f => `<div>${f.name} (${(f.size / (1024 * 1024)).toFixed(2)} MB)</div>`).join('');
 }
 
 function validateFileType(files: File[]): File | null {
   for (const file of files) {
-    const extension = file.name.split('.').pop()?.toLowerCase();
-    const isValid = 
-      file.type === 'image/heic' || 
-      file.type === 'image/heif' || 
-      extension === 'heic' || 
-      extension === 'heif';
-    if (!isValid) return file;
+    if (!/\.heic$|\.heif$/i.test(file.name)) {
+      return file;
+    }
   }
   return null;
 }
 
-function updateFileList() {
-  fileListDiv.innerHTML = '';
-  selectedFiles.forEach(file => {
-    const fileItem = document.createElement('div');
-    fileItem.textContent = file.name;
-    fileListDiv.appendChild(fileItem);
-  });
-}
-
-function updateProgress(percentage: number) {
-  progressBar.style.width = `${Math.min(percentage, 100)}%`;
+function updateProgress(percent: number) {
+  progressBar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
 }
 
 function showWarning(message: string) {
@@ -236,12 +227,21 @@ function showWarning(message: string) {
 
 function showError(message: string) {
   errorMessage.textContent = message;
-  setUIState('error');
+  errorArea.hidden = false;
 }
 
 function resetUI() {
   selectedFiles = [];
   convertedFiles = [];
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+  if (worker) {
+    // Workerはキャンセル時に再生成する（進行中処理の後始末を分離）
+    worker.terminate();
+    worker = null;
+  }
   fileInput.value = '';
   fileListDiv.innerHTML = '';
   updateProgress(0);
@@ -261,31 +261,28 @@ function setUIState(state: UIState) {
   switch (state) {
     case 'initial':
       dropZone.hidden = false;
-      statusMessage.textContent = '';
+      fileSelectBtn.hidden = false;
+      statusMessage.textContent = 'ファイルをドロップするか、選択してください。';
       break;
     case 'files-selected':
-      statusArea.hidden = false;
       startBtn.hidden = false;
-      startBtn.disabled = false;
       resetBtn.hidden = false;
-      statusMessage.textContent = `合計 ${selectedFiles.length} 枚のファイルが選択されました。`;
+      statusArea.hidden = false;
+      statusMessage.textContent = '準備ができました。「変換を開始」を押してください。';
       break;
     case 'converting':
-      statusArea.hidden = false;
-      startBtn.hidden = false;
-      startBtn.disabled = true;
       cancelBtn.hidden = false;
-      statusMessage.textContent = '変換中...'; // Initial message
+      statusArea.hidden = false;
+      statusMessage.textContent = '変換中...';
       break;
     case 'converted':
-      statusArea.hidden = false;
       downloadBtn.hidden = false;
       resetBtn.hidden = false;
+      statusArea.hidden = false;
       statusMessage.textContent = '変換が完了しました。ダウンロードしてください。';
       break;
     case 'error':
       errorArea.hidden = false;
-      resetBtn.hidden = false;
       // Error message is set in showError
       break;
   }

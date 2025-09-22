@@ -250,10 +250,12 @@ function resetUI() {
 }
 
 function setUIState(state: UIState) {
+  // Reset all button states first
   dropZone.hidden = true;
   statusArea.hidden = true;
   errorArea.hidden = true;
   startBtn.hidden = true;
+  startBtn.disabled = true; // Default to disabled
   cancelBtn.hidden = true;
   downloadBtn.hidden = true;
   resetBtn.hidden = true;
@@ -266,6 +268,7 @@ function setUIState(state: UIState) {
       break;
     case 'files-selected':
       startBtn.hidden = false;
+      startBtn.disabled = false; // Enable the button
       resetBtn.hidden = false;
       statusArea.hidden = false;
       statusMessage.textContent = '準備ができました。「変換を開始」を押してください。';
@@ -283,6 +286,7 @@ function setUIState(state: UIState) {
       break;
     case 'error':
       errorArea.hidden = false;
+      resetBtn.hidden = false; // Allow resetting after an error
       // Error message is set in showError
       break;
   }
